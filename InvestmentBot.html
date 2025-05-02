@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <title>InvestSmart Bot</title>
+  <style>
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .message { animation: fadeIn 0.3s ease-in; }
+    .send-btn:hover { animation: pulse 0.5s infinite; }
+    @keyframes pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.1); }
+      100% { transform: scale(1); }
+    }
+    .typing-dots span {
+      animation: blink 1.4s infinite both;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes blink {
+      0% { opacity: 0.2; }
+      20% { opacity: 1; }
+      100% { opacity: 0.2; }
+    }
+    canvas { max-width: 100%; height: auto; }
+  </style>
+</head>
+<body class="bg-gradient-to-br from-teal-100 via-indigo-100 to-purple-100 flex items-center justify-center min-h-screen p-4">
+  <!-- Chatbot Container -->
+  <div 
+    id="chat-container" 
+    class="bg-white/30 backdrop-blur-md w-full max-w-[450px] h-[650px] rounded-2xl shadow-lg flex flex-col border border-white/20"
+    aria-label="InvestSmart Chatbot"
+  >
+    <!-- Chat Header -->
+    <div class="flex items-center bg-gradient-to-r from-teal-600 to-indigo-600 text-white p-4 rounded-t-2xl">
+      <h2 class="text-xl font-bold tracking-tight">InvestSmart Assistant</h2>
+    </div>
+
+    <!-- Chat Messages -->
+    <div id="chat-box" class="flex-1 p-5 overflow-y-auto space-y-4 bg-transparent" role="log" aria-live="polite">
+      <div class="message flex items-start mr-10">
+        <div class="w-8 h-8 rounded-full bg-teal-500 flex items-center justify-center text-white font-semibold mr-2" aria-hidden="true">🤖</div>
+        <div class="bg-teal-100 p-3 rounded-t-xl rounded-br-xl text-sm">Hi there!
+          Welcome to InvestSmart Assistant 👋
+          Tell me your financial goal or ask about Indian stocks (e.g., "Show Reliance stock chart")! 🚀💰</div>
+      </div>
+    </div>
+
+    <!-- Chat Input -->
+    <div class="chat-input flex p-4 border-t border-gray-200/50 bg-white/50 rounded-b-2xl">
+      <input 
+        id="user-input" 
+        type="text" 
+        placeholder="State your financial goal or stock query..." 
+        class="flex-1 p-3 bg-white/70 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-400 transition-all text-sm"
+        aria-label="Enter your financial goal or stock query"
+        maxlength="200"
+      />
+      <button 
+        id="send-btn" 
+        class="send-btn ml-3 w-10 h-10 bg-teal-600 text-white rounded-full flex items-center justify-center hover:bg-teal-700 transition-all"
+        aria-label="Send message"
+      >
+        ➤
+      </button>
+    </div>
+  </div>
+
+  <script>
+
+
+    // Alpha Vantage API key (use backend proxy in production)
+    const ALPHA_VANTAGE_API_KEY = "L49SVGH7C69WEC1U"; // Replace with your Alpha Vantage API key
+    const stockMapping = {
+      "Reliance": "RELIANCE.BSE",
+      "TCS": "TCS.BSE",
+      "HDFC": "HDFCBANK.BSE",
+      "Infosys": "INFY.BSE",
+      "ICICI": "ICICIBANK.BSE",
+      "SBI": "SBIN.BSE",
+      "Tata Motors": "TATAMOTORS.BSE"
+    };
+
+    // Note: Use a backend proxy in production to secure the Gemini API key
+    const GEMINI_API_KEY = "AIzaSyBuAzr8WAboayYyQPVxKU-6RofItnzabHk"; // Replace with valid Gemini API key or use backend
+
+    const initialPrompt = `
+      You are InvestSmart Assistant, an AI providing smart investment suggestions based on users' financial goals or stock queries.
+      You must:
+      - Greet users briefly and ask for their financial goal or stock query if not provided.
+      - For financial goals (e.g., retirement, home purchase), suggest investment options (stocks, bonds, ETFs, etc.) tailored to their goal, risk, and timeline.
+      - For stock queries (e.g., "Show Reliance stock chart"), indicate that a chart will be displayed and provide a brief summary of the stock's performance.
+      - Keep responses short (under 50 words), clear, and actionable.
+      - Focus on asset classes or general stock trends, not specific predictions.
+      - For off-topic queries, redirect to financial planning or stock queries.
+      - If unsure, suggest contacting a financial advisor or our helpline: 9729024316.
+      - Encourage users to start investing.
+      Stay friendly, professional, and concise.
+    `;
+
+    const messageHistory = [{ role: "user", parts: [{ text: initialPrompt }] }];
+    const MAX_HISTORY = 20;
+
+    function sanitizeInput(input) {
+      const div = document.createElement("div");
+      div.textContent = input;
+      return div.innerHTML;
+    }
+
+    async function fetchStockData(symbol, stockName) {
+      const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${symbol}&apikey=${ALPHA_VANTAGE_API_KEY}`;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) {
+          if (res.status === 429) return { error: "API rate limit exceeded. Using mock data.", data: indianStocksData[stockName] };
+          throw new Error(`HTTP error! Status: ${res.status}`);
+        }
+        const data = await res.json();
+        if (!data["Time Series (Daily)"]) {
+          return { error: "Invalid stock symbol or no data available. Using mock data.", data: indianStocksData[stockName] };
+        }
+        const timeSeries = data["Time Series (Daily)"];
+        const stockData = Object.entries(timeSeries)
+          .slice(0, 5) // Get last 5 days
+          .map(([date, values]) => ({
+            date,
+            price: parseFloat(values["4. close"])
+          }))
+          .reverse(); // Chronological order
+        return { data: stockData };
+      } catch (err) {
+        console.error("Error fetching stock data:", err);
+        return { error: "Failed to fetch stock data. Using mock data.", data: indianStocksData[stockName] };
+      }
+    }
+
+    function generateStockChart(stockName, data) {
+      const chatBox = document.getElementById("chat-box");
+      const chartDiv = document.createElement("div");
+      chartDiv.className = "message flex items-start mr-10";
+      chartDiv.innerHTML = `
+        <div class="w-8 h-8 rounded-full bg-teal-500 flex items-center gothic justify-center text-white font-semibold mr-2" aria-hidden="true">🤖</div>
+        <div class="bg-teal-100 p-3 rounded-t-xl rounded-br-xl text-sm">
+          <canvas id="chart-${stockName}"></canvas>
+        </div>
+      `;
+      chatBox.appendChild(chartDiv);
+      chatBox.scrollTo({ top: chatBox.scrollHeight, behavior: "smooth" });
+
+      const ctx = document.getElementById(`chart-${stockName}`).getContext("2d");
+      new Chart(ctx, {
+        type: "line",
+        data: {
+          labels: data.map(d => d.date),
+          datasets: [{
+            label: `${stockName} Price (INR)`,
+            data: data.map(d => d.price),
+            borderColor: "teal",
+            fill: false
+          }]
+        },
+        options: {
+          responsive: true,
+          scales: {
+            x: { title: { display: true, text: "Date" } },
+            y: { title: { display: true, text: "Price (INR)" } }
+          }
+        }
+      });
+    }
+
+    async function getGeminiReply(message) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key=${GEMINI_API_KEY}`;
+      if (messageHistory.length > MAX_HISTORY) {
+        messageHistory.splice(1, messageHistory.length - MAX_HISTORY);
+      }
+      const payload = { contents: messageHistory };
+
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+          if (res.status === 403) return "Invalid API key or access denied. Please contact support.";
+          if (res.status === 429) return "Rate limit exceeded. Please try again later.";
+          throw new Error(`HTTP error! Status: ${res.status}`);
+        }
+
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const data = await res.json();
+        const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, I'm unavailable right now. Try again later.";
+        messageHistory.push({ role: "model", parts: [{ text: reply }] });
+        return reply;
+      } catch (err) {
+        console.error("Error:", err);
+        return err.message.includes("Failed to fetch")
+          ? "Network error. Please check your internet connection."
+          : "Unable to connect. Please try again later.";
+      }
+    }
+
+    let isSending = false;
+    async function sendMessage() {
+      if (isSending) return;
+      isSending = true;
+      const input = document.getElementById("user-input");
+      const message = input.value.trim();
+      if (!message) {
+        isSending = false;
+        return;
+      }
+
+      const chatBox = document.getElementById("chat-box");
+      const userDiv = document.createElement("div");
+      userDiv.className = "message flex items-start ml-10";
+      userDiv.innerHTML = `
+        <div class="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-white font-semibold mr-2" aria-hidden="true">👤</div>
+        <div class="bg-indigo-100 p-3 rounded-t-xl rounded-bl-xl text-sm">${sanitizeInput(message)}</div>
+      `;
+      chatBox.appendChild(userDiv);
+      input.value = "";
+      chatBox.scrollTo({ top: chatBox.scrollHeight, behavior: "smooth" });
+
+      if (message.toLowerCase().includes("who made you")) {
+        const botDiv = document.createElement("div");
+        botDiv.className = "message flex items-start mr-10";
+        botDiv.innerHTML = `
+          <div class="w-8 h-8 rounded-full bg-teal-500 flex items-center justify-center text-white font-semibold mr-2" aria-hidden="true">🤖</div>
+          <div class="bg-teal-100 p-3 rounded-t-xl rounded-br-xl text-sm">I was created by Manjay, Sumit & Tiyas!</div>
+        `;
+        chatBox.appendChild(botDiv);
+        chatBox.scrollTo({ top: chatBox.scrollHeight, behavior: "smooth" });
+        isSending = false;
+        return;
+      }
+
+      // Check for stock chart request
+      const stockNames = Object.keys(stockMapping);
+      let requestedStock = null;
+      let stockSymbol = null;
+      for (const stock of stockNames) {
+        if (message.toLowerCase().includes(stock.toLowerCase()) && message.toLowerCase().includes("chart")) {
+          requestedStock = stock;
+          stockSymbol = stockMapping[stock];
+          break;
+        }
+      }
+
+      messageHistory.push({ role: "user", parts: [{ text: message }] });
+      const botDiv = document.createElement("div");
+      botDiv.className = "message flex items-start mr-10";
+      botDiv.innerHTML = `
+        <div class="w-8 h-8 rounded-full bg-teal-500 flex items-center justify-center text-white font-semibold mr-2" aria-hidden="true">🤖</div>
+        <div class="bg-teal-100 p-3 rounded-t-xl rounded-br-xl text-sm typing-dots"><span>.</span><span>.</span><span>.</span></div>
+      `;
+      chatBox.appendChild(botDiv);
+      chatBox.scrollTo({ top: chatBox.scrollHeight, behavior: "smooth" });
+
+      if (requestedStock && stockSymbol) {
+        const stockData = await fetchStockData(stockSymbol, requestedStock);
+        if (stockData.error) {
+          botDiv.innerHTML = `
+            <div class="w-8 h-8 rounded-full bg-teal-500 flex items-center justify-center text-white font-semibold mr-2" aria-hidden="true">🤖</div>
+            <div class="bg-teal-100 p-3 rounded-t-xl rounded-br-xl text-sm">${sanitizeInput(stockData.error)}</div>
+          `;
+          if (stockData.data) {
+            generateStockChart(requestedStock, stockData.data);
+          }
+        } else {
+          const reply = `Displaying ${requestedStock} stock chart. Recent trends show price fluctuations.`;
+          botDiv.innerHTML = `
+            <div class="w-8 h-8 rounded-full bg-teal-500 flex items-center justify-center text-white font-semibold mr-2" aria-hidden="true">🤖</div>
+            <div class="bg-teal-100 p-3 rounded-t-xl rounded-br-xl text-sm">${sanitizeInput(reply)}</div>
+          `;
+          generateStockChart(requestedStock, stockData.data);
+        }
+      } else {
+        const reply = await getGeminiReply(message);
+        botDiv.innerHTML = `
+          <div class="w-8 h-8 rounded-full bg-teal-500 flex items-center justify-center text-white font-semibold mr-2" aria-hidden="true">🤖</div>
+          <div class="bg-teal-100 p-3 rounded-t-xl rounded-br-xl text-sm">${sanitizeInput(reply)}</div>
+        `;
+      }
+
+      chatBox.scrollTo({ top: chatBox.scrollHeight, behavior: "smooth" });
+      isSending = false;
+    }
+
+    document.getElementById("send-btn").addEventListener("click", sendMessage);
+    document.getElementById("user-input").addEventListener("keypress", (e) => {
+      if (e.key === "Enter") sendMessage();
+    });
+
+    document.addEventListener("DOMContentLoaded", () => {
+      console.log("InvestSmart Bot initialized with expanded Indian stocks data and Alpha Vantage API.");
+    });
+  </script>
+</body>
+</html>
